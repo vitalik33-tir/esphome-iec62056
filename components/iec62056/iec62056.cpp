@@ -479,22 +479,23 @@ void IEC62056Component::loop() {
       set_next_state_(WAIT_FOR_STX);
       break;
 
-    case WAIT_FOR_STX:  // wait for STX
-      report_state_();
-
-      // If the loop is called not very often, data can be overwritten.
-      // In that case just increase UART buffer size
+ case WAIT_FOR_STX:
+  report_state_();
+  {
+    const uint32_t start = millis();
+    while (millis() - start < 2000) {       // 2 секунды ждем STX
       if (receive_frame_() >= 1) {
         if (STX == in_buf_[0]) {
-          ESP_LOGD(TAG, "Meter started readout transmission");
+          ESP_LOGD(TAG, "Meter started readout transmission (Mode C)");
           set_next_state_(READOUT);
-        } else {
-          ESP_LOGD(TAG, "No STX. Got 0x%02x", in_buf_[0]);
-          retry_or_sleep_();
+          break;
         }
       }
-      delay(1);  // <<< добавлено: имитация yield логгера
-      break;
+      delay(1);
+    }
+  }
+  break;
+
 
     case READOUT:
       report_state_();
