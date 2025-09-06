@@ -494,7 +494,7 @@ wait_(300, WAIT_FOR_STX);  // неблокирующий таймаут
     }
   }
   // если не получили STX — через 2 секунды state машина сама вызовет retry_or_sleep_
-  if (millis() - last_transmission_from_meter_timestamp_ > 2000) {
+  if (millis() - last_transmission_from_meter_timestamp_ > 5000) {
     ESP_LOGE(TAG, "Timeout waiting STX");
     retry_or_sleep_();
   }
