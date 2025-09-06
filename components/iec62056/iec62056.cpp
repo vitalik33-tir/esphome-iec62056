@@ -478,11 +478,9 @@ void IEC62056Component::loop() {
   ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
   update_baudrate_(new_baudrate);
 
-  update_baudrate_(new_baudrate);
-wait_(300, WAIT_FOR_STX);  // неблокирующий таймаут
+  clear_uart_input_buffer_();       // <<< очистить перед ожиданием
+  wait_(800, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
 
-
-  set_next_state_(WAIT_FOR_STX);
   break;
 
  case WAIT_FOR_STX:
@@ -491,10 +489,10 @@ wait_(300, WAIT_FOR_STX);  // неблокирующий таймаут
     if (STX == in_buf_[0]) {
       ESP_LOGD(TAG, "Meter started readout transmission (Mode C)");
       set_next_state_(READOUT);
+      break;
     }
   }
-  // если не получили STX — через 2 секунды state машина сама вызовет retry_or_sleep_
-  if (millis() - last_transmission_from_meter_timestamp_ > 5000) {
+  if (millis() - retry_connection_start_timestamp_ > 3000) {
     ESP_LOGE(TAG, "Timeout waiting STX");
     retry_or_sleep_();
   }
