@@ -185,12 +185,8 @@ char *IEC62056Component::get_id_(size_t frame_size) {
 void IEC62056Component::set_protocol_(char z) {
   if (force_mode_d_) {
     mode_ = PROTOCOL_MODE_D;
-  } else if (z >= PROTO_B_RANGE_BEGIN && z <= PROTO_B_RANGE_END) {
-    mode_ = PROTOCOL_MODE_B;
-  } else if (z >= PROTO_C_RANGE_BEGIN && z <= PROTO_C_RANGE_END) {
-    mode_ = PROTOCOL_MODE_C;
   } else {
-    mode_ = PROTOCOL_MODE_A;
+    mode_ = PROTOCOL_MODE_С;
   }
 }
 
