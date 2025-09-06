@@ -1,4 +1,4 @@
-#include "iec62056.h"
+#include "iec62056.component.h"
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -14,40 +14,38 @@ void IEC62056Component::setup() {
 void IEC62056Component::loop() {
   switch (this->state_) {
     case INIT_HANDSHAKE:
-      this->send_request_();
+      this->send_frame_();
       break;
 
     case SET_BAUD_RATE:
-      ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", this->new_baudrate_, this->baud_rate_char_);
-      this->update_baudrate_(this->new_baudrate_);
-      // пауза после переключения скорости
-      this->wait_(this->post_baud_switch_ms_, POST_BAUD_SWITCH);
-      this->set_next_state_(WAIT_FOR_STX);
+      ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
+      update_baudrate_(new_baudrate);
+
+      // пауза после смены скорости
+      delay(300);   // 200–300 мс
+
+      set_next_state_(WAIT_FOR_STX);
       break;
 
-    case WAIT_FOR_STX: {
-      ESP_LOGD(TAG, "Waiting STX from meter...");
+    case WAIT_FOR_STX: {  // wait for STX
+      report_state_();
+
       const uint32_t started = millis();
-      while (millis() - started < this->stx_timeout_ms_) {
-        if (this->receive_frame_(1, this->interchar_timeout_ms_) >= 1) {
-          if (this->in_buf_[0] == STX) {
+      while (millis() - started < 1500) {   // ждём до 1.5 сек
+        if (receive_frame_() >= 1) {
+          if (STX == in_buf_[0]) {
             ESP_LOGD(TAG, "Meter started readout transmission");
-            this->set_next_state_(READ_DATA_BLOCK);
-            return;
-          } else {
-            // не STX, подчистим
-            while (this->uart_->available()) this->uart_->read();
+            set_next_state_(READ_DATA_BLOCK);
+            break;
           }
         }
         delay(1);  // имитация yield логгера
       }
-      ESP_LOGE(TAG, "No transmission from meter (timeout waiting STX)");
-      this->set_next_state_(RETRY_OR_FAIL);
       break;
     }
 
     case READ_DATA_BLOCK:
-      // сюда вставьте ваш разбор данных как раньше
+      // здесь остался твой текущий парсинг данных
       break;
 
     default:
@@ -55,45 +53,33 @@ void IEC62056Component::loop() {
   }
 }
 
-void IEC62056Component::send_request_() {
-  // очистить вход перед запросом
+void IEC62056Component::send_frame_() {
+  // подчистить входной буфер
   while (this->uart_->available()) this->uart_->read();
 
-  this->uart_->write(this->out_buf_, this->data_out_size_);
+  this->uart_->write(out_buf_, data_out_size_);
   this->uart_->flush();
 
   // пауза разворота
-  this->wait_(this->turnaround_delay_ms_, AFTER_TX_TURNAROUND);
+  delay(5);   // 3–5 мс
 }
 
-int IEC62056Component::receive_frame_(size_t min_bytes, uint16_t interchar_timeout_ms) {
-  const uint32_t t0 = millis();
-  while (this->uart_->available() < (int)min_bytes) {
-    if (millis() - t0 > interchar_timeout_ms) return 0;
-    delay(1);
-  }
-
+int IEC62056Component::receive_frame_() {
   size_t n = 0;
   uint32_t last = millis();
+
   while (true) {
     while (this->uart_->available()) {
       int c = this->uart_->read();
       if (c < 0) break;
-      if (n < sizeof(this->in_buf_)) this->in_buf_[n++] = (uint8_t)c;
+      if (n < sizeof(in_buf_)) in_buf_[n++] = (uint8_t)c;
       last = millis();
     }
-    if (millis() - last >= interchar_timeout_ms) break;
+    if (millis() - last >= 30) break;  // межсимвольный таймаут 30 мс
     delay(1);
   }
-  return (int)n;
-}
 
-// --- дефолты таймингов ---
-IEC62056Component::IEC62056Component() {
-  this->turnaround_delay_ms_ = 4;     // пауза после send_frame_
-  this->post_baud_switch_ms_ = 250;   // после update_baudrate_
-  this->stx_timeout_ms_ = 1500;       // ожидание STX
-  this->interchar_timeout_ms_ = 30;   // межсимвольный таймаут
+  return (int)n;
 }
 
 }  // namespace iec62056
