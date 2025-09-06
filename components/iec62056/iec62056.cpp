@@ -474,10 +474,13 @@ void IEC62056Component::loop() {
       break;
 
     case SET_BAUD_RATE:
-      ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
-      update_baudrate_(new_baudrate);
-      set_next_state_(WAIT_FOR_STX);
-      break;
+  ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
+  update_baudrate_(new_baudrate);
+
+  delay(300);  // <<< добавлено: пауза после смены скорости для Mode C
+
+  set_next_state_(WAIT_FOR_STX);
+  break;
 
  case WAIT_FOR_STX:
   report_state_();
