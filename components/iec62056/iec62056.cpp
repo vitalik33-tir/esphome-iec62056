@@ -14,7 +14,7 @@ static const uint8_t STX = 0x02;
 static const uint8_t ACK = 0x06;
 
 static const char *const TAG = "iec62056.component";
-const uint32_t BAUDRATES[] = {300, 600, 1200, 2400, 4800, 9600, 19200};
+const uint32_t BAUDRATES[] = {300, 4800, 4800, 4800, 4800, 4800, 4800};
 #define MAX_BAUDRATE (BAUDRATES[sizeof(BAUDRATES) / sizeof(uint32_t) - 1])
 #define PROTO_B_MIN_BAUDRATE (BAUDRATES[1])
 
