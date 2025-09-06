@@ -479,7 +479,7 @@ void IEC62056Component::loop() {
   update_baudrate_(new_baudrate);
 
   clear_uart_input_buffer_();       // <<< очистить перед ожиданием
-  wait_(1500, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
+  wait_(3500, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
 
   break;
 
@@ -492,7 +492,7 @@ void IEC62056Component::loop() {
       break;
     }
   }
-  if (millis() - retry_connection_start_timestamp_ > 5000) {
+  if (millis() - retry_connection_start_timestamp_ > 3000) {
     ESP_LOGE(TAG, "Timeout waiting STX");
     retry_or_sleep_();
   }
