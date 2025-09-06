@@ -76,6 +76,7 @@ void IEC62056Component::dump_config() {
 void IEC62056Component::send_frame_() {
   this->write_array(out_buf_, data_out_size_);
   ESP_LOGVV(TAG, "TX: %s", format_hex_pretty(out_buf_, data_out_size_).c_str());
+  delay(5);  // <<< добавлено: пауза разворота
 }
 
 size_t IEC62056Component::receive_frame_() {
@@ -424,6 +425,7 @@ void IEC62056Component::loop() {
       if (mode_ == PROTOCOL_MODE_A) {
         ESP_LOGVV(TAG, "Using PROTOCOL_MODE_A");
         // switching baud rate not supported, start reading data
+        delay(300);  // <<< добавлено: пауза после смены скорости
         set_next_state_(WAIT_FOR_STX);
         break;
       }
@@ -491,6 +493,7 @@ void IEC62056Component::loop() {
           retry_or_sleep_();
         }
       }
+      delay(1);  // <<< добавлено: имитация yield логгера
       break;
 
     case READOUT:
