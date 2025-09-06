@@ -76,7 +76,8 @@ void IEC62056Component::dump_config() {
 void IEC62056Component::send_frame_() {
   this->write_array(out_buf_, data_out_size_);
   ESP_LOGVV(TAG, "TX: %s", format_hex_pretty(out_buf_, data_out_size_).c_str());
-  delay(5);  // <<< добавлено: пауза разворота
+  this->write_array(out_buf_, data_out_size_);
+  iuart_->flush();   // дожидаемся отправки
 }
 
 size_t IEC62056Component::receive_frame_() {
