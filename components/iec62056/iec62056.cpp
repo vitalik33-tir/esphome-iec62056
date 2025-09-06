@@ -425,8 +425,8 @@ void IEC62056Component::loop() {
       if (mode_ == PROTOCOL_MODE_A) {
         ESP_LOGVV(TAG, "Using PROTOCOL_MODE_A");
         // switching baud rate not supported, start reading data
-        delay(300);  // <<< добавлено: пауза после смены скорости
-        set_next_state_(WAIT_FOR_STX);
+        wait_(300, WAIT_FOR_STX);
+
         break;
       }
 
