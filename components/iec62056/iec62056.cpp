@@ -492,7 +492,7 @@ void IEC62056Component::loop() {
       break;
     }
   }
-  if (millis() - retry_connection_start_timestamp_ > 3000) {
+  if (millis() - retry_connection_start_timestamp_ > 5000) {
     ESP_LOGE(TAG, "Timeout waiting STX");
     retry_or_sleep_();
   }
