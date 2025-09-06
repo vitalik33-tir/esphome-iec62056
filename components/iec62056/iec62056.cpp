@@ -479,7 +479,7 @@ void IEC62056Component::loop() {
   update_baudrate_(new_baudrate);
 
   clear_uart_input_buffer_();       // <<< очистить перед ожиданием
-  wait_(800, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
+  wait_(1500, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
 
   break;
 
