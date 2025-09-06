@@ -1,4 +1,4 @@
-#include "iec62056.component.h"
+#include "iec62056.h"
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -21,8 +21,8 @@ void IEC62056Component::loop() {
       ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
       update_baudrate_(new_baudrate);
 
-      // пауза после смены скорости
-      delay(300);   // 200–300 мс
+      // <<< добавлено >>>
+      delay(300);   // пауза после смены скорости
 
       set_next_state_(WAIT_FOR_STX);
       break;
@@ -39,13 +39,14 @@ void IEC62056Component::loop() {
             break;
           }
         }
-        delay(1);  // имитация yield логгера
+        // <<< добавлено >>>
+        delay(1);   // имитация yield логгера
       }
       break;
     }
 
     case READ_DATA_BLOCK:
-      // здесь остался твой текущий парсинг данных
+      // тут остался твой парсинг данных
       break;
 
     default:
@@ -60,8 +61,8 @@ void IEC62056Component::send_frame_() {
   this->uart_->write(out_buf_, data_out_size_);
   this->uart_->flush();
 
-  // пауза разворота
-  delay(5);   // 3–5 мс
+  // <<< добавлено >>>
+  delay(5);   // пауза разворота
 }
 
 int IEC62056Component::receive_frame_() {
@@ -75,8 +76,8 @@ int IEC62056Component::receive_frame_() {
       if (n < sizeof(in_buf_)) in_buf_[n++] = (uint8_t)c;
       last = millis();
     }
-    if (millis() - last >= 30) break;  // межсимвольный таймаут 30 мс
-    delay(1);
+    if (millis() - last >= 30) break;  // межсимвольный таймаут
+    delay(1);                          // <<< оставляем yield
   }
 
   return (int)n;
