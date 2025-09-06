@@ -463,7 +463,7 @@ void IEC62056Component::loop() {
       out_buf_[2] = baud_rate_char;
       send_frame_();
 
-      new_baudrate = identification_to_baud_rate_(baud_rate_char);
+      new_baudrate = 9600;
 
       // wait for the frame to be fully transmitted before changing baud rate,
       // otherwise port get stuck and no packet can be received (ESP32)
