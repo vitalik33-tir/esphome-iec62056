@@ -484,20 +484,19 @@ void IEC62056Component::loop() {
 
  case WAIT_FOR_STX:
   report_state_();
-  {
-    const uint32_t start = millis();
-    while (millis() - start < 2000) {       // 2 секунды ждем STX
-      if (receive_frame_() >= 1) {
-        if (STX == in_buf_[0]) {
-          ESP_LOGD(TAG, "Meter started readout transmission (Mode C)");
-          set_next_state_(READOUT);
-          break;
-        }
-      }
-      delay(1);
+  if (receive_frame_() >= 1) {
+    if (STX == in_buf_[0]) {
+      ESP_LOGD(TAG, "Meter started readout transmission (Mode C)");
+      set_next_state_(READOUT);
     }
   }
+  // если не получили STX — через 2 секунды state машина сама вызовет retry_or_sleep_
+  if (millis() - last_transmission_from_meter_timestamp_ > 2000) {
+    ESP_LOGE(TAG, "Timeout waiting STX");
+    retry_or_sleep_();
+  }
   break;
+
 
 
     case READOUT:
