@@ -76,8 +76,6 @@ void IEC62056Component::dump_config() {
 void IEC62056Component::send_frame_() {
   this->write_array(out_buf_, data_out_size_);
   ESP_LOGVV(TAG, "TX: %s", format_hex_pretty(out_buf_, data_out_size_).c_str());
-  this->write_array(out_buf_, data_out_size_);
-  iuart_->flush();   // дожидаемся отправки
 }
 
 size_t IEC62056Component::receive_frame_() {
@@ -270,12 +268,10 @@ void IEC62056Component::loop() {
   const uint32_t now = millis();
 
   size_t frame_size;
- 
 
   if (!is_wait_state_() && now - last_transmission_from_meter_timestamp_ >= connection_timeout_ms_) {
     ESP_LOGE(TAG, "No transmission from meter.");
     connection_status_(false);
-    wait_(500, INFINITE_WAIT);
     retry_or_sleep_();
     return;
   }
@@ -428,8 +424,7 @@ void IEC62056Component::loop() {
       if (mode_ == PROTOCOL_MODE_A) {
         ESP_LOGVV(TAG, "Using PROTOCOL_MODE_A");
         // switching baud rate not supported, start reading data
-        wait_(300, WAIT_FOR_STX);
-
+        set_next_state_(WAIT_FOR_STX);
         break;
       }
 
@@ -477,27 +472,26 @@ void IEC62056Component::loop() {
       break;
 
     case SET_BAUD_RATE:
-  ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
-  update_baudrate_(new_baudrate);
-
-  clear_uart_input_buffer_();       // <<< очистить перед ожиданием
-  wait_(1500, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
-
-  break;
-
- case WAIT_FOR_STX:
-  report_state_();
-  if (receive_frame_() >= 1) {
-    if (STX == in_buf_[0]) {
-      ESP_LOGD(TAG, "Meter started readout transmission (Mode C)");
-      set_next_state_(READOUT);
+      ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
+      update_baudrate_(new_baudrate);
+      set_next_state_(WAIT_FOR_STX);
       break;
-    }
-  }
- 
-  break;
 
+    case WAIT_FOR_STX:  // wait for STX
+      report_state_();
 
+      // If the loop is called not very often, data can be overwritten.
+      // In that case just increase UART buffer size
+      if (receive_frame_() >= 1) {
+        if (STX == in_buf_[0]) {
+          ESP_LOGD(TAG, "Meter started readout transmission");
+          set_next_state_(READOUT);
+        } else {
+          ESP_LOGD(TAG, "No STX. Got 0x%02x", in_buf_[0]);
+          retry_or_sleep_();
+        }
+      }
+      break;
 
     case READOUT:
       report_state_();
