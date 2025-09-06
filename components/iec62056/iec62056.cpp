@@ -27,11 +27,9 @@ void IEC62056Component::setup() {
 #ifdef USE_ESP32_FRAMEWORK_ARDUINO
   iuart_ = make_unique<IEC62056UART>(*static_cast<uart::ESP32ArduinoUARTComponent *>(this->parent_));
 #endif
-
 #ifdef USE_ESP_IDF
   iuart_ = make_unique<IEC62056UART>(*static_cast<uart::IDFUARTComponent *>(this->parent_));
 #endif
-
 #if USE_ESP8266
   iuart_ = make_unique<IEC62056UART>(*static_cast<uart::ESP8266UartComponent *>(this->parent_));
 #endif
@@ -39,10 +37,12 @@ void IEC62056Component::setup() {
   clear_uart_input_buffer_();
 
   if (force_mode_d_) {
-    ESP_LOGI(TAG, "Mode D. Continuously reading data");
-    set_next_state_(MODE_D_WAIT);
-  } else if (is_periodic_readout_enabled_()) {
-    wait_(15000, BEGIN);  // Start the first readout 15s from now
+    ESP_LOGW(TAG, "Mode D is not supported in this build. Ignoring.");
+    force_mode_d_ = false;
+  }
+
+  if (is_periodic_readout_enabled_()) {
+    wait_(15000, BEGIN);  // первый опрос через 15с (как в оригинале)
   } else {
     ESP_LOGI(TAG, "No periodic readouts (update_interval=never). Only switch can trigger readout.");
     set_next_state_(INFINITE_WAIT);
@@ -53,17 +53,14 @@ void IEC62056Component::dump_config() {
   ESP_LOGCONFIG(TAG, "IEC62056:");
   LOG_UPDATE_INTERVAL(this);
   ESP_LOGCONFIG(TAG, "  Connection timeout: %.3fs", this->connection_timeout_ms_ / 1000.0f);
-  if (!force_mode_d_) {
-    // These settings are not used in Mode D
-    ESP_LOGCONFIG(TAG, "  Battery meter: %s", YESNO(this->battery_meter_));
-    if (this->config_baud_rate_max_bps_ > 0) {
-      ESP_LOGCONFIG(TAG, "  Max baud rate: %u bps", this->config_baud_rate_max_bps_);
-    } else {
-      ESP_LOGCONFIG(TAG, "  Max baud rate: not limited");
-    }
-    ESP_LOGCONFIG(TAG, "  Max retries: %u", this->max_retries_);
-    ESP_LOGCONFIG(TAG, "  Retry delay: %.3fs", this->retry_delay_ / 1000.0f);
+  ESP_LOGCONFIG(TAG, "  Battery meter: %s", YESNO(this->battery_meter_));
+  if (this->config_baud_rate_max_bps_ > 0) {
+    ESP_LOGCONFIG(TAG, "  Max baud rate: %u bps", this->config_baud_rate_max_bps_);
+  } else {
+    ESP_LOGCONFIG(TAG, "  Max baud rate: not limited");
   }
+  ESP_LOGCONFIG(TAG, "  Max retries: %u", this->max_retries_);
+  ESP_LOGCONFIG(TAG, "  Retry delay: %.3fs", this->retry_delay_ / 1000.0f);
   ESP_LOGCONFIG(TAG, "  Mode D: %s", YESNO(this->force_mode_d_));
 
   ESP_LOGCONFIG(TAG, "  Sensors:");
@@ -75,6 +72,7 @@ void IEC62056Component::dump_config() {
 
 void IEC62056Component::send_frame_() {
   this->write_array(out_buf_, data_out_size_);
+  iuart_->flush();  // дождаться завершения TX, чтобы не урезать кадр при смене скорости
   ESP_LOGVV(TAG, "TX: %s", format_hex_pretty(out_buf_, data_out_size_).c_str());
 }
 
@@ -88,9 +86,8 @@ size_t IEC62056Component::receive_frame_() {
   uint32_t while_start = millis();
   uint8_t *p;
   while (count > 0) {
-    // Make sure loop() is <30 ms
     if (millis() - while_start > max_while_ms) {
-      return 0;
+      return 0;  // не блокируем >30ms
     }
 
     if (data_in_size_ < MAX_IN_BUF_SIZE) {
@@ -107,14 +104,11 @@ size_t IEC62056Component::receive_frame_() {
       }
     }
 
-    // it is not possible to have \r\n and ETX in buffer at one time
     if (data_in_size_ >= 2 && ETX == in_buf_[data_in_size_ - 2]) {
       ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(in_buf_, data_in_size_).c_str());
       ESP_LOGV(TAG, "Detected ETX");
-
       readout_lrc_ = in_buf_[data_in_size_ - 1];
       ESP_LOGV(TAG, "BCC: 0x%02x", readout_lrc_);
-
       update_last_transmission_from_meter_timestamp_();
       ret_val = data_in_size_;
       data_in_size_ = 0;
@@ -133,14 +127,11 @@ size_t IEC62056Component::receive_frame_() {
 
     if (data_in_size_ >= 2 && '\r' == in_buf_[data_in_size_ - 2] && '\n' == in_buf_[data_in_size_ - 1]) {
       ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(in_buf_, data_in_size_).c_str());
-
-      // check echo
       if (data_in_size_ == data_out_size_ && 0 == memcmp(out_buf_, in_buf_, data_out_size_)) {
         data_out_size_ = data_in_size_ = 0;
         ESP_LOGVV(TAG, "Echo. Ignore frame.");
         return 0;
       }
-
       update_last_transmission_from_meter_timestamp_();
       ret_val = data_in_size_;
       data_in_size_ = 0;
@@ -151,7 +142,7 @@ size_t IEC62056Component::receive_frame_() {
 }
 
 void IEC62056Component::send_battery_wakeup_sequence_() {
-  const size_t n = 84;  //~2.24s
+  const size_t n = 84;  //~2.24s @300 бод
   static_assert(n <= MAX_OUT_BUF_SIZE, "Out buffer too small");
   memset(out_buf_, 0, n);
   data_out_size_ = n;
@@ -160,96 +151,55 @@ void IEC62056Component::send_battery_wakeup_sequence_() {
 
 char *IEC62056Component::get_id_(size_t frame_size) {
   uint8_t *p = &in_buf_[frame_size - 1 - 2 /*\r\n*/];
-  size_t min_id_data_size = 7;  // min packet is '/XXXZ\r\n'
-
+  size_t min_id_data_size = 7;  // '/XXXZ\r\n'
   while (p >= in_buf_ && frame_size >= min_id_data_size) {
     if ('/' == *p) {
       if ((size_t)(&in_buf_[MAX_IN_BUF_SIZE - 1] - p) < min_id_data_size) {
         ESP_LOGVV(TAG, "Invalid ID packet.");
-
-        // garbage, ignore
         break;
       }
-      in_buf_[frame_size - 2] = '\0';  // terminate string and remove \r\n
+      in_buf_[frame_size - 2] = '\0';
       ESP_LOGD(TAG, "Meter identification: '%s'", p);
-
       return (char *) p;
     }
-
     p--;
   }
-
   return nullptr;
 }
 
-void IEC62056Component::set_protocol_(char z) {
-  if (force_mode_d_) {
-    mode_ = PROTOCOL_MODE_D;
-  } else if (z >= PROTO_B_RANGE_BEGIN && z <= PROTO_B_RANGE_END) {
-    mode_ = PROTOCOL_MODE_B;
-  } else if (z >= PROTO_C_RANGE_BEGIN && z <= PROTO_C_RANGE_END) {
-    mode_ = PROTOCOL_MODE_C;
-  } else {
-    mode_ = PROTOCOL_MODE_A;
-  }
+void IEC62056Component::set_protocol_(char /*z*/) {
+  // Жёстко режим C
+  mode_ = PROTOCOL_MODE_C;
 }
 
 uint32_t IEC62056Component::identification_to_baud_rate_(char z) {
-  uint32_t rate;
-
-  if (z >= PROTO_B_RANGE_BEGIN && z <= PROTO_B_RANGE_END) {
-    rate = BAUDRATES[1 + z - PROTO_B_RANGE_BEGIN];
-  } else if (z >= PROTO_C_RANGE_BEGIN && z <= PROTO_C_RANGE_END) {
-    rate = BAUDRATES[z - PROTO_C_RANGE_BEGIN];
-  } else {
-    rate = 0;
-  }
-
-  return rate;
+  if (z >= '0' && z <= '6') return BAUDRATES[z - '0'];
+  return 0;
 }
 
 char IEC62056Component::baud_rate_to_identification_(uint32_t baud_rate) {
-  if (PROTOCOL_MODE_B == mode_) {
-    for (size_t i = 1; i < (sizeof(BAUDRATES) / sizeof(uint32_t)); i++) {
-      if (baud_rate == BAUDRATES[i]) {
-        return PROTO_B_RANGE_BEGIN + i - 1;
-      }
-    }
-  } else {  // PROTOCOL_MODE_C == mode_
-    for (size_t i = 0; i < (sizeof(BAUDRATES) / sizeof(uint32_t)); i++) {
-      if (baud_rate == BAUDRATES[i]) {
-        return PROTO_C_RANGE_BEGIN + i;
-      }
-    }
+  for (size_t i = 0; i < (sizeof(BAUDRATES) / sizeof(uint32_t)); i++) {
+    if (baud_rate == BAUDRATES[i]) return PROTO_C_RANGE_BEGIN + i;
   }
-
-  // return lowest baudrate for unknown char
-  return PROTOCOL_MODE_B == mode_ ? PROTO_B_RANGE_BEGIN : PROTO_C_RANGE_BEGIN;
+  return PROTO_C_RANGE_BEGIN;
 }
 
 void IEC62056Component::connection_status_(bool connected) {
-  if (connected) {
-    ESP_LOGD(TAG, "Connection start");
-  } else {
-    ESP_LOGD(TAG, "Connection end");
-  }
+  ESP_LOGD(TAG, connected ? "Connection start" : "Connection end");
 #ifdef USE_BINARY_SENSOR
-  if (readout_status_sensor_) {
-    readout_status_sensor_->publish_state(connected);
-  }
+  if (readout_status_sensor_) readout_status_sensor_->publish_state(connected);
 #endif
 }
 
 void IEC62056Component::parse_id_(const char *packet) {
   auto len = strlen(packet);
   meter_identification_.assign(packet);
-  baud_rate_identification_ = len >= 5 ? packet[4] : 0 /*set proto A, baud rate=0*/;
-  ESP_LOGVV(TAG, "Baudrate char: '%c'", baud_rate_identification_);
+  // Всегда фиксируемся на 9600 ('5'), даже если счётчик шлёт другой символ
+  baud_rate_identification_ = '5';
+  ESP_LOGVV(TAG, "Baudrate char forced to '5' (9600)");
   set_protocol_(baud_rate_identification_);
-  if (len >= 7 && packet[5] == '\\' && packet[6] == '2') // /XXXZ\2Ident
-  {                                    
-      ESP_LOGD(TAG, "The meter is indicating mode E, which is unsupported. Attempting mode C. " 
-                    "This will work for meters supporting both mode E and C.");
+  if (len >= 7 && packet[5] == '\\' && packet[6] == '2') {
+    ESP_LOGD(TAG, "Meter indicates mode E; using mode C fallback.");
   }
 }
 
@@ -278,117 +228,52 @@ void IEC62056Component::loop() {
 
   switch (state_) {
     case INFINITE_WAIT:
-      // only switch can set another state
       report_state_();
       update_last_transmission_from_meter_timestamp_();
       break;
 
     case WAIT:
       report_state_();
-      if (check_wait_period_()) {
-        state_ = wait_next_state_;
-      }
+      if (check_wait_period_()) state_ = wait_next_state_;
       update_last_transmission_from_meter_timestamp_();
       break;
 
     case MODE_D_WAIT:
+      // не используется, оставлено для совместимости с состояниями
       report_state_();
-
-      if ((frame_size = receive_frame_())) {
-        char *packet = get_id_(frame_size);
-        if (packet) {
-          parse_id_(packet);
-          set_next_state_(MODE_D_READOUT);
-          update_last_transmission_from_meter_timestamp_();
-          retry_connection_start_timestamp_ = millis();
-          connection_status_(true);
-          mode_d_empty_frame_received = false;
-        }
-      }
       break;
 
     case MODE_D_READOUT:
+      // не используется
       report_state_();
-
-      if ((frame_size = receive_frame_())) {
-        if (in_buf_[0] == '!') {
-          connection_status_(false);
-
-          // end of data
-          ESP_LOGD(TAG, "Total connection time: %u ms", millis() - retry_connection_start_timestamp_);
-
-          verify_all_sensors_got_value_();
-          ESP_LOGD(TAG, "Start of sensor update");
-          set_next_state_(UPDATE_STATES);
-          sensors_iterator_ = sensors_.begin();
-        } else {
-          // parse data frame
-          in_buf_[frame_size - 2] = 0;
-
-          ESP_LOGD(TAG, "Data: '%s'", in_buf_);
-
-          // in mode D an empty line is sent after identification packet
-          // ignore only one
-          if (!mode_d_empty_frame_received && '\0' == in_buf_[0]) {
-            ESP_LOGV(TAG, "Ignore empty frame");
-            mode_d_empty_frame_received = true;
-            break;
-          }
-
-          std::string obis;
-          std::string val1;
-          std::string val2;
-
-          if (!parse_line_((const char *) in_buf_, obis, val1, val2)) {
-            ESP_LOGE(TAG, "Invalid frame format: '%s'", in_buf_);
-            break;
-          }
-
-          // Update all matching sensors
-          auto range = sensors_.equal_range(obis);
-          for (auto it = range.first; it != range.second; ++it) {
-            set_sensor_value_(it, val1.c_str(), val2.c_str());
-          }
-        }
-      }
       break;
 
     case BEGIN:
       report_state_();
-
       update_connection_start_timestamp_();
       connection_status_(true);
+
+      // ВСЕГДА начинаем на 300 бод для идентификации (IEC 62056-21 Mode C)
+      update_baudrate_(300);
 
       if (battery_meter_) {
         set_next_state_(BATTERY_WAKEUP);
       } else {
         set_next_state_(SEND_REQUEST);
       }
-      update_baudrate_(300);  // make sure we start with 300 bps
-
       update_last_transmission_from_meter_timestamp_();
       break;
 
     case BATTERY_WAKEUP:
-      // Special sequence to wake up ("normal" is used here)
-      // 1. send NULL chars for 2.1-2.3s
-      // 2. wait 1.5-1.7
-      // 3. send standard identification message
-
-      // if we send 84 NULLs at 300 baud it will take ~2.24s
       report_state_();
-
       ESP_LOGD(TAG, "Battery meter wakeup sequence");
-
       this->send_battery_wakeup_sequence_();
-      wait_(1600 + 2240, SEND_REQUEST);  // wait for ~1.6s + 2.24s for all NULLs transmitted
+      wait_(1600 + 2240, SEND_REQUEST);  // ~1.6s пауза + 2.24s TX нулей
       break;
 
     case SEND_REQUEST:
       report_state_();
-
-      clear_uart_input_buffer_();  // remove garbage including NULLs from battery meter wakeup sequence
-
+      clear_uart_input_buffer_();
       static_assert(MAX_OUT_BUF_SIZE >= sizeof(id_request), "Out buffer too small");
       memcpy(out_buf_, id_request, sizeof(id_request));
       data_out_size_ = sizeof(id_request);
@@ -398,7 +283,6 @@ void IEC62056Component::loop() {
 
     case GET_IDENTIFICATION:
       report_state_();
-
       if ((frame_size = receive_frame_())) {
         char *packet = get_id_(frame_size);
         if (packet) {
@@ -408,80 +292,38 @@ void IEC62056Component::loop() {
           retry_or_sleep_();
           break;
         }
-
         ESP_LOGD(TAG, "Meter reported protocol: %c", (char) mode_);
-        if (mode_ != PROTOCOL_MODE_A) {
-          ESP_LOGD(TAG, "Meter reported max baud rate: %u bps ('%c')",
-                   identification_to_baud_rate_(baud_rate_identification_), baud_rate_identification_);
-        }
         set_next_state_(PREPARE_ACK);
       }
       break;
 
     case PREPARE_ACK:
       report_state_();
-
-      if (mode_ == PROTOCOL_MODE_A) {
-        ESP_LOGVV(TAG, "Using PROTOCOL_MODE_A");
-        // switching baud rate not supported, start reading data
-        set_next_state_(WAIT_FOR_STX);
-        break;
-      }
-
-      // protocol B, C
-      if (config_baud_rate_max_bps_ != 0 && config_baud_rate_max_bps_ != MAX_BAUDRATE) {
-        auto negotiated_bps = identification_to_baud_rate_(baud_rate_identification_);
-        if (negotiated_bps > config_baud_rate_max_bps_) {
-          negotiated_bps = config_baud_rate_max_bps_;
-
-          if (mode_ == PROTOCOL_MODE_B && negotiated_bps < PROTO_B_MIN_BAUDRATE) {
-            negotiated_bps = PROTO_B_MIN_BAUDRATE;
-          }
-        }
-
-        baud_rate_char = baud_rate_to_identification_(negotiated_bps);
-        ESP_LOGD(TAG, "Using negotiated baud rate %d bps.", negotiated_bps);
-      } else {
-        ESP_LOGD(TAG, "Using meter maximum baud rate %d bps ('%c').",
-                 identification_to_baud_rate_(baud_rate_identification_), baud_rate_identification_);
-        baud_rate_char = baud_rate_identification_;
-      }
-
-      if (retry_counter_ > 0) {  // decrease baud rate for retry
-        baud_rate_char -= retry_counter_;
-        if (mode_ == PROTOCOL_MODE_B && baud_rate_char < PROTO_B_RANGE_BEGIN) {
-          baud_rate_char = PROTO_B_RANGE_BEGIN;
-        } else if (baud_rate_char < PROTO_C_RANGE_BEGIN) {
-          baud_rate_char = PROTO_C_RANGE_BEGIN;
-        }
-        ESP_LOGD(TAG, "Decreased baud rate for retry %u to: %d bps ('%c').", retry_counter_,
-                 identification_to_baud_rate_(baud_rate_char), baud_rate_char);
-      }
+      // Жёстко фиксируем 9600 ('5'), без снижения скорости при ретраях
+      baud_rate_char = '5';
+      ESP_LOGD(TAG, "Using fixed baud rate 9600 bps.");
 
       data_out_size_ = sizeof(set_baud);
       memcpy(out_buf_, set_baud, data_out_size_);
-      out_buf_[2] = baud_rate_char;
+      out_buf_[2] = baud_rate_char;  // вставили '5'
       send_frame_();
 
-      new_baudrate = 9600;
+      new_baudrate = identification_to_baud_rate_(baud_rate_char);
 
-      // wait for the frame to be fully transmitted before changing baud rate,
-      // otherwise port get stuck and no packet can be received (ESP32)
-
-      wait_(250, SET_BAUD_RATE);
+      // Дать счётчику время обработать ACK и переключиться
+      wait_(300, SET_BAUD_RATE);  // короткая неблокирующая пауза вместо delay()
       break;
 
     case SET_BAUD_RATE:
       ESP_LOGD(TAG, "Switching to new baud rate %u bps ('%c')", new_baudrate, baud_rate_char);
       update_baudrate_(new_baudrate);
+      clear_uart_input_buffer_();
+      // подождём появления STX до таймаута соединения
       set_next_state_(WAIT_FOR_STX);
       break;
 
-    case WAIT_FOR_STX:  // wait for STX
+    case WAIT_FOR_STX:
       report_state_();
-
-      // If the loop is called not very often, data can be overwritten.
-      // In that case just increase UART buffer size
       if (receive_frame_() >= 1) {
         if (STX == in_buf_[0]) {
           ESP_LOGD(TAG, "Meter started readout transmission");
@@ -495,23 +337,17 @@ void IEC62056Component::loop() {
 
     case READOUT:
       report_state_();
-
       if ((frame_size = receive_frame_())) {
-        // ETX is the first byte (the way receive_frame_() works and \r\n in data)
         if (in_buf_[0] == ETX) {
           ESP_LOGD(TAG, "Total connection time: %u ms", millis() - retry_connection_start_timestamp_);
-          // include ETX (but exclude STX)
-          lrc_ ^= ETX;  // faster than update_lrc_(in_buf_,1);
-          bool bcc_failed = false;
-          if (lrc_ == readout_lrc_) {
+          lrc_ ^= ETX;
+          bool bcc_failed = (lrc_ != readout_lrc_);
+          if (!bcc_failed) {
             ESP_LOGD(TAG, "BCC verification is OK");
           } else {
             ESP_LOGE(TAG, "BCC verification failed. Expected 0x%02x, got 0x%02x", lrc_, readout_lrc_);
-            bcc_failed = true;
           }
-
           connection_status_(false);
-
           if (bcc_failed) {
             retry_or_sleep_();
           } else {
@@ -520,28 +356,19 @@ void IEC62056Component::loop() {
             set_next_state_(UPDATE_STATES);
             sensors_iterator_ = sensors_.begin();
           }
-
         } else {
-          // parse data
           update_lrc_(in_buf_, frame_size);
-
           in_buf_[frame_size - 2] = 0;
           ESP_LOGD(TAG, "Data: %s", in_buf_);
-          std::string obis;
-          std::string val1;
-          std::string val2;
-
+          std::string obis, val1, val2;
           if ('!' == in_buf_[0]) {
             ESP_LOGV(TAG, "Detected end of readout record");
             break;
           }
-
           if (!parse_line_((const char *) in_buf_, obis, val1, val2)) {
             ESP_LOGE(TAG, "Invalid frame format: '%s'", in_buf_);
             break;
           }
-
-          // Update all matching sensors
           auto range = sensors_.equal_range(obis);
           for (auto it = range.first; it != range.second; ++it) {
             set_sensor_value_(it, val1.c_str(), val2.c_str());
@@ -555,22 +382,17 @@ void IEC62056Component::loop() {
       if (sensors_iterator_ != sensors_.end()) {
         IEC62056SensorBase *s = (*sensors_iterator_).second;
         sensors_iterator_++;
-        if (s->has_value()) {
-          s->publish();
-        }
+        if (s->has_value()) s->publish();
       } else {
         ESP_LOGD(TAG, "End of sensor update");
-
-        wait_next_readout_();  // wait for the next cycle
+        wait_next_readout_();
         break;
       }
   }
 }
 
 void IEC62056Component::update_lrc_(const uint8_t *data, size_t size) {
-  for (size_t i = 0; i < size; i++) {
-    lrc_ ^= data[i];
-  }
+  for (size_t i = 0; i < size; i++) lrc_ ^= data[i];
 }
 
 float IEC62056Component::get_setup_priority() const { return setup_priority::DATA; }
@@ -580,18 +402,13 @@ void IEC62056Component::register_sensor(IEC62056SensorBase *sensor) {
 }
 
 bool IEC62056Component::validate_float_(const char *value) {
-  // safe value, in reality this number is related to the number of digits on meter's display
   const size_t max_len = 20;
   size_t count = 0;
   const char *p = value;
-  while (*p && *p != '*' && *p != '#') {  // ignore unit at the end
-    if (!(isdigit(*p) || *p == '.' || *p == '-' || *p == ',')) { // accept comma and dot as decimal separator
-      return false;
-    }
-    p++;
-    count++;
+  while (*p && *p != '*' && *p != '#') {
+    if (!(isdigit(*p) || *p == '.' || *p == '-' || *p == ',')) return false;
+    p++; count++;
   }
-
   return count > 0 && count <= max_len;
 }
 
@@ -602,124 +419,79 @@ bool IEC62056Component::set_sensor_value_(SENSOR_MAP::iterator &i, const char *v
   if (type == TEXT_SENSOR) {
     IEC62056TextSensor *txt = static_cast<IEC62056TextSensor *>(sensor);
     switch (txt->get_group()) {
-      case 0:  // set entire frame
-        value = (const char *) this->in_buf_;
-        break;
-
-      case 2:
-        value = value2;
-        break;
-
-        // defaults to value1
+      case 0: value = (const char *) this->in_buf_; break;
+      case 2: value = value2; break;
     }
     txt->set_value(value);
-
-    ESP_LOGD(TAG, "Set text sensor '%s' for OBIS '%s' group %d. Value: '%s'", txt->get_name().c_str(),
-             txt->get_obis().c_str(), txt->get_group(), value);
-  } else {  // SENSOR
-    // convert to float
+    ESP_LOGD(TAG, "Set text sensor '%s' for OBIS '%s' group %d. Value: '%s'",
+             txt->get_name().c_str(), txt->get_obis().c_str(), txt->get_group(), value);
+  } else {
     if (validate_float_(value)) {
       IEC62056Sensor *sen = static_cast<IEC62056Sensor *>(sensor);
-      // convert comma (if any) to dot
-      char *p = strchr(value, ',');
-      if (p) {
-        *p = '.'; // strtof() expects dot as decimal separator
-      }
+      char *p = strchr(value, ','); if (p) *p = '.';
       float f = strtof(value, nullptr);
       sen->set_value(f);
-      ESP_LOGD(TAG, "Set sensor '%s' for OBIS '%s'. Value: %f", sen->get_name().c_str(), sen->get_obis().c_str(), f);
+      ESP_LOGD(TAG, "Set sensor '%s' for OBIS '%s'. Value: %f",
+               sen->get_name().c_str(), sen->get_obis().c_str(), f);
     } else {
       ESP_LOGE(TAG, "Cannot convert data to number. Consider using text sensor. Invalid data: '%s'", value);
       return false;
     }
   }
-
   return true;
 }
 
 void IEC62056Component::reset_all_sensors_() {
-  for (const auto &item : sensors_) {
-    IEC62056SensorBase *s = item.second;
-    s->reset();
-  }
+  for (const auto &item : sensors_) item.second->reset();
 }
 
 void IEC62056Component::verify_all_sensors_got_value_() {
   for (const auto &item : sensors_) {
     IEC62056SensorBase *s = item.second;
     if (!s->has_value()) {
-      ESP_LOGE(TAG,
-               "Not all sensors received data from the meter. The first one: OBIS '%s'. Verify sensor is defined with "
-               "valid OBIS code.",
-               s->get_obis().c_str());
-      break;  // Display just one error. If more displayed, component could take a long time for an operation
+      ESP_LOGE(TAG, "Not all sensors received data. First missing OBIS: '%s'.", s->get_obis().c_str());
+      break;
     }
   }
 }
 
-// Valid OBIS codes may contain digits and uppercase letters
 bool IEC62056Component::validate_obis_(const std::string &obis) {
-  const size_t max_obis_len = 25;  // arbitrary chosen max len
-
-  if (obis.size() > max_obis_len) {
-    return false;
-  }
-
+  const size_t max_obis_len = 25;
+  if (obis.size() > max_obis_len) return false;
   for (const char &c : obis) {
-    if (!(c == ':' || c == '.' || c == '-' || c == '*' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) {
+    if (!(c == ':' || c == '.' || c == '-' || c == '*' ||
+          (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z')))
       return false;
-    }
   }
   return true;
 }
 
-bool IEC62056Component::parse_line_(const char *line, std::string &out_obis, std::string &out_value1,
-                                    std::string &out_value2) {
-  const char *open_bracket = nullptr;
-  const char *close_bracket = nullptr;
-  const char *open_bracket2 = nullptr;
-  const char *close_bracket2 = nullptr;
-
+bool IEC62056Component::parse_line_(const char *line, std::string &out_obis,
+                                    std::string &out_value1, std::string &out_value2) {
+  const char *open_bracket = nullptr, *close_bracket = nullptr;
+  const char *open_bracket2 = nullptr, *close_bracket2 = nullptr;
   const char *p = line;
   while (*p++) {
-    if ('(' == *p && !open_bracket) {
-      open_bracket = p;
-    } else if (')' == *p && !close_bracket) {
-      close_bracket = p;
-    } else if ('(' == *p && !open_bracket2) {
-      open_bracket2 = p;
-    } else if (')' == *p && !close_bracket2) {
-      close_bracket2 = p;
-    }
+    if ('(' == *p && !open_bracket) open_bracket = p;
+    else if (')' == *p && !close_bracket) close_bracket = p;
+    else if ('(' == *p && !open_bracket2) open_bracket2 = p;
+    else if (')' == *p && !close_bracket2) close_bracket2 = p;
   }
-
-  if (!open_bracket || !close_bracket || close_bracket < open_bracket) {
-    return false;
-  }
-
+  if (!open_bracket || !close_bracket || close_bracket < open_bracket) return false;
   out_obis.assign(line, open_bracket - line);
   out_value1.assign(open_bracket + 1, close_bracket - open_bracket - 1);
-
-  if (!(!open_bracket2 || !close_bracket2 || close_bracket2 < open_bracket2)) {
+  if (open_bracket2 && close_bracket2 && close_bracket2 > open_bracket2)
     out_value2.assign(open_bracket2 + 1, close_bracket2 - open_bracket2 - 1);
-  } else {
-    out_value2.erase();
-  }
-
+  else
+    out_value2.clear();
   return validate_obis_(out_obis);
 }
 
 void IEC62056Component::clear_uart_input_buffer_() {
   int available = this->available();
-  int len;
-
-  if (available > 0) {
-    ESP_LOGVV(TAG, "Garbage data in UART input buffer: %d bytes", available);
-  }
-
+  if (available > 0) ESP_LOGVV(TAG, "Garbage in UART RX: %d bytes", available);
   while (available > 0) {
-    len = std::min(available, (int) MAX_IN_BUF_SIZE);
-
+    int len = std::min(available, (int) MAX_IN_BUF_SIZE);
     this->read_array(in_buf_, len);
     available -= len;
   }
@@ -736,44 +508,19 @@ void IEC62056Component::wait_(uint32_t ms, CommState state) {
 
 const char *IEC62056Component::state2txt_(CommState state) {
   switch (state) {
-    case BATTERY_WAKEUP:
-      return "BATTERY_WAKEUP";
-
-    case BEGIN:
-      return "BEGIN";
-
-    case WAIT:
-      return "WAIT";
-
-    case SEND_REQUEST:
-      return "SEND_REQUEST";
-
-    case GET_IDENTIFICATION:
-      return "GET_IDENTIFICATION";
-
-    case PREPARE_ACK:
-      return "SET_BAUD_RATE";
-
-    case WAIT_FOR_STX:
-      return "WAIT_FOR_STX";
-
-    case READOUT:
-      return "READOUT";
-
-    case UPDATE_STATES:
-      return "UPDATE_STATES";
-
-    case INFINITE_WAIT:
-      return "INFINITE_WAIT";
-
-    case MODE_D_WAIT:
-      return "MODE_D_WAIT";
-
-    case MODE_D_READOUT:
-      return "MODE_D_READOUT";
-
-    default:
-      return "UNKNOWN";
+    case BATTERY_WAKEUP: return "BATTERY_WAKEUP";
+    case BEGIN: return "BEGIN";
+    case WAIT: return "WAIT";
+    case SEND_REQUEST: return "SEND_REQUEST";
+    case GET_IDENTIFICATION: return "GET_IDENTIFICATION";
+    case PREPARE_ACK: return "SET_BAUD_RATE";
+    case WAIT_FOR_STX: return "WAIT_FOR_STX";
+    case READOUT: return "READOUT";
+    case UPDATE_STATES: return "UPDATE_STATES";
+    case INFINITE_WAIT: return "INFINITE_WAIT";
+    case MODE_D_WAIT: return "MODE_D_WAIT";
+    case MODE_D_READOUT: return "MODE_D_READOUT";
+    default: return "UNKNOWN";
   }
 }
 
@@ -803,41 +550,34 @@ void IEC62056Component::trigger_readout() {
     ESP_LOGD(TAG, "Triggering readout in Mode D is not possible.");
     return;
   }
-
   if (!is_wait_state_()) {
     ESP_LOGD(TAG, "Readout in progress. Ignoring trigger.");
     return;
   }
-
   ESP_LOGD(TAG, "Triggering readout");
   set_next_state_(BEGIN);
 }
 
 void IEC62056Component::wait_next_readout_() {
   this->on_wait_next_readout_callback_.call();
-
   if (force_mode_d_) {
     set_next_state_(MODE_D_WAIT);
     return;
   }
-
   uint32_t now = millis();
   uint32_t delta = now - scheduled_connection_start_timestamp_;
   uint32_t actual_wait_time = update_interval_ms_ - delta;
-
   retry_counter_reset_();
   if (delta > update_interval_ms_ && is_periodic_readout_enabled_()) {
     ESP_LOGD(TAG, "Total connection time greater than configured update interval. Working continuously.");
-    actual_wait_time = 0;  // continuously read data
+    actual_wait_time = 0;
   }
-
   scheduled_timestamp_set_ = false;
   if (is_periodic_readout_enabled_()) {
-    ESP_LOGD(TAG, "Waiting %u ms for the next scheduled readout (every %u ms).", actual_wait_time, update_interval_ms_);
+    ESP_LOGD(TAG, "Waiting %u ms for the next scheduled readout (every %u ms).",
+             actual_wait_time, update_interval_ms_);
     wait_(actual_wait_time, BEGIN);
   } else {
-    // UINT32_MAX means no update, use switch to trigger readout
-    // just wait
     ESP_LOGD(TAG, "No scheduled readout. Use switch to trigger readout.");
     set_next_state_(INFINITE_WAIT);
   }
@@ -845,8 +585,6 @@ void IEC62056Component::wait_next_readout_() {
 
 void IEC62056Component::update_connection_start_timestamp_() {
   retry_connection_start_timestamp_ = millis();
-
-  // Update only for the first time
   if (!scheduled_timestamp_set_) {
     scheduled_connection_start_timestamp_ = retry_connection_start_timestamp_;
     scheduled_timestamp_set_ = true;
