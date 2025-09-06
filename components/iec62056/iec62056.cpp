@@ -270,10 +270,12 @@ void IEC62056Component::loop() {
   const uint32_t now = millis();
 
   size_t frame_size;
+ 
 
   if (!is_wait_state_() && now - last_transmission_from_meter_timestamp_ >= connection_timeout_ms_) {
     ESP_LOGE(TAG, "No transmission from meter.");
     connection_status_(false);
+    wait_(500, INFINITE_WAIT);
     retry_or_sleep_();
     return;
   }
@@ -479,7 +481,7 @@ void IEC62056Component::loop() {
   update_baudrate_(new_baudrate);
 
   clear_uart_input_buffer_();       // <<< очистить перед ожиданием
-  wait_(3500, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
+  wait_(7500, WAIT_FOR_STX);         // <<< дать больше времени (0.8с)
 
   break;
 
