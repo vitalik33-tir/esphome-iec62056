@@ -51,7 +51,15 @@ void IEC62056Component::setup() {
 
 void IEC62056Component::dump_config() {
   ESP_LOGCONFIG(TAG, "IEC62056:");
-  LOG_UPDATE_INTERVAL(this);
+
+  // В новых версиях ESPHome LOG_UPDATE_INTERVAL(this) требует PollingComponent*.
+  // Этот компонент работает через loop() и собственный update_interval_ms_.
+  if (this->update_interval_ms_ == UINT32_MAX) {
+    ESP_LOGCONFIG(TAG, "  Update Interval: never (trigger only)");
+  } else {
+    ESP_LOGCONFIG(TAG, "  Update Interval: %.3fs", this->update_interval_ms_ / 1000.0f);
+  }
+
   ESP_LOGCONFIG(TAG, "  Connection timeout: %.3fs", this->connection_timeout_ms_ / 1000.0f);
   if (!force_mode_d_) {
     // These settings are not used in Mode D
